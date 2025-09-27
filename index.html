@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beat-Reactive Music Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+
+    #container {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+    }
+
+    #visualizer {
+        width: 100%;
+        height: 100%;
+        background: radial-gradient(circle at center, #1a0033, #000);
+    }
+
+    #controls {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        z-index: 100;
+        display: flex;
+        gap: 15px;
+        align-items: center;
+    }
+
+    button {
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.3s;
+    }
+
+    button:hover {
+        background: rgba(255, 255, 255, 0.2);
+        transform: translateY(-2px);
+    }
+
+    button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .active {
+        background: rgba(0, 255, 100, 0.3) !important;
+        border-color: rgba(0, 255, 100, 0.6) !important;
+    }
+
+    #status {
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 12px;
+        margin-left: 10px;
+    }
+
+    #sensitivity {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: white;
+        font-size: 12px;
+    }
+
+    #sensitivitySlider {
+        width: 80px;
+    }
+
+    .beat-flash {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.1);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.1s;
+    }
+</style>
+
+
+</head>
+<body>
+    <div id="container">
+        <canvas id="visualizer"></canvas>
+        <div class="beat-flash" id="beatFlash"></div>
+
+
+    <div id="controls">
+        <button id="startBtn">Start Mic</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <div id="sensitivity">
+            <label>Beat Sensitivity:</label>
+            <input type="range" id="sensitivitySlider" min="0.1" max="3" step="0.1" value="1.2">
+            <span id="sensitivityValue">1.2</span>
+        </div>
+        <div id="status">Click "Start Mic" to begin</div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+<script>eruda.init();</script>
+<script>
+    class MusicVisualizer {
+        constructor() {
+            this.canvas = document.getElementById('visualizer');
+            this.ctx = this.canvas.getContext('2d');
+            this.audioContext = null;
+            this.analyser = null;
+            this.microphone = null;
+            this.dataArray = null;
+            this.bufferLength = 0;
+            this.isRunning = false;
+            
+            // Beat detection variables
+            this.lastBeatTime = 0;
+            this.beatThreshold = 1.2;
+            this.energyHistory = [];
+            this.maxEnergyHistory = 43; // ~1 second at 60fps
+            
+            // Visual elements
+            this.particles = [];
+            this.barHeights = [];
+            this.beatIntensity = 0;
+            this.hue = 0;
+            
+            this.setupCanvas();
+            this.setupControls();
+            this.initializeParticles();
+        }
+
+        setupCanvas() {
+            this.resizeCanvas();
+            window.addEventListener('resize', () => this.resizeCanvas());
+        }
+
+        resizeCanvas() {
+            this.canvas.width = window.innerWidth;
+            this.canvas.height = window.innerHeight;
+        }
+
+        setupControls() {
+            const startBtn = document.getElementById('startBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            const sensitivitySlider = document.getElementById('sensitivitySlider');
+            const sensitivityValue = document.getElementById('sensitivityValue');
+            
+            startBtn.addEventListener('click', () => this.start());
+            stopBtn.addEventListener('click', () => this.stop());
+            
+            sensitivitySlider.addEventListener('input', (e) => {
+                this.beatThreshold = parseFloat(e.target.value);
+                sensitivityValue.textContent = e.target.value;
+            });
+        }
+
+        async start() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    } 
+                });
+                
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                this.analyser = this.audioContext.createAnalyser();
+                this.microphone = this.audioContext.createMediaStreamSource(stream);
+                
+                this.analyser.fftSize = 512;
+                this.analyser.smoothingTimeConstant = 0.8;
+                this.bufferLength = this.analyser.frequencyBinCount;
+                this.dataArray = new Uint8Array(this.bufferLength);
+                
+                this.microphone.connect(this.analyser);
+                
+                this.isRunning = true;
+                this.animate();
+                
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                document.getElementById('startBtn').classList.remove('active');
+                document.getElementById('stopBtn').classList.add('active');
+                document.getElementById('status').textContent = 'Listening to microphone...';
+                
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                document.getElementById('status').textContent = 'Microphone access denied';
+            }
+        }
+
+        stop() {
+            this.isRunning = false;
+            
+            if (this.microphone) {
+                this.microphone.disconnect();
+                this.microphone = null;
+            }
+            
+            if (this.audioContext) {
+                this.audioContext.close();
+                this.audioContext = null;
+            }
+            
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('startBtn').classList.add('active');
+            document.getElementById('stopBtn').classList.remove('active');
+            document.getElementById('status').textContent = 'Stopped';
+        }
+
+        initializeParticles() {
+            for (let i = 0; i < 150; i++) {
+                this.particles.push({
+                    x: Math.random() * this.canvas.width,
+                    y: Math.random() * this.canvas.height,
+                    vx: (Math.random() - 0.5) * 2,
+                    vy: (Math.random() - 0.5) * 2,
+                    size: Math.random() * 3 + 1,
+                    alpha: Math.random() * 0.5 + 0.2,
+                    hue: Math.random() * 360
+                });
+            }
+        }
+
+        detectBeat(dataArray) {
+            // Calculate energy in bass frequencies (roughly 60-250Hz)
+            const bassEnd = Math.floor(250 * this.bufferLength / (this.audioContext.sampleRate / 2));
+            const bassStart = Math.floor(60 * this.bufferLength / (this.audioContext.sampleRate / 2));
+            
+            let bassEnergy = 0;
+            for (let i = bassStart; i < bassEnd; i++) {
+                bassEnergy += dataArray[i] * dataArray[i];
+            }
+            bassEnergy = bassEnergy / (bassEnd - bassStart);
+            
+            // Store energy history
+            this.energyHistory.push(bassEnergy);
+            if (this.energyHistory.length > this.maxEnergyHistory) {
+                this.energyHistory.shift();
+            }
+            
+            // Calculate average energy
+            const avgEnergy = this.energyHistory.reduce((a, b) => a + b, 0) / this.energyHistory.length;
+            
+            // Beat detection: current energy is significantly higher than recent average
+            const now = Date.now();
+            if (bassEnergy > avgEnergy * this.beatThreshold && 
+                now - this.lastBeatTime > 200) { // Minimum 200ms between beats
+                this.lastBeatTime = now;
+                this.onBeat(bassEnergy / avgEnergy);
+                return true;
+            }
+            
+            return false;
+        }
+
+        onBeat(intensity) {
+            // Flash effect
+            const flash = document.getElementById('beatFlash');
+            flash.style.opacity = Math.min(intensity * 0.3, 0.8);
+            setTimeout(() => flash.style.opacity = '0', 100);
+            
+            // Particle burst
+            for (let i = 0; i < 20; i++) {
+                this.particles.push({
+                    x: this.canvas.width / 2,
+                    y: this.canvas.height / 2,
+                    vx: (Math.random() - 0.5) * intensity * 10,
+                    vy: (Math.random() - 0.5) * intensity * 10,
+                    size: Math.random() * 5 + 2,
+                    alpha: 1,
+                    hue: this.hue,
+                    life: 60
+                });
+            }
+            
+            this.beatIntensity = intensity;
+        }
+
+        animate() {
+            if (!this.isRunning) return;
+            
+            this.analyser.getByteFrequencyData(this.dataArray);
+            
+            // Detect beats
+            const isBeat = this.detectBeat(this.dataArray);
+            
+            // Clear canvas with trail effect
+            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            
+            // Update hue
+            this.hue = (this.hue + 1) % 360;
+            
+            // Draw frequency bars
+            this.drawFrequencyBars();
+            
+            // Update and draw particles
+            this.updateParticles();
+            
+            // Beat intensity decay
+            this.beatIntensity *= 0.95;
+            
+            requestAnimationFrame(() => this.animate());
+        }
+
+        drawFrequencyBars() {
+            const barWidth = this.canvas.width / this.bufferLength * 2;
+            const centerY = this.canvas.height / 2;
+            
+            for (let i = 0; i < this.bufferLength; i++) {
+                const barHeight = (this.dataArray[i] / 255) * this.canvas.height * 0.8;
+                const x = i * barWidth;
+                
+                // Smooth bar height transitions
+                if (!this.barHeights[i]) this.barHeights[i] = 0;
+                this.barHeights[i] = this.barHeights[i] * 0.8 + barHeight * 0.2;
+                
+                const hue = (this.hue + i * 2) % 360;
+                const intensity = this.beatIntensity > 0 ? this.beatIntensity * 0.5 : 0.7;
+                
+                this.ctx.fillStyle = `hsla(${hue}, 70%, 50%, ${intensity})`;
+                
+                // Draw bars from center outward
+                this.ctx.fillRect(x, centerY - this.barHeights[i] / 2, barWidth - 1, this.barHeights[i]);
+            }
+        }
+
+        updateParticles() {
+            for (let i = this.particles.length - 1; i >= 0; i--) {
+                const p = this.particles[i];
+                
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vx *= 0.98;
+                p.vy *= 0.98;
+                
+                if (p.life !== undefined) {
+                    p.life--;
+                    p.alpha = p.life / 60;
+                    if (p.life <= 0) {
+                        this.particles.splice(i, 1);
+                        continue;
+                    }
+                } else {
+                    p.alpha *= 0.995;
+                    if (p.alpha < 0.01) {
+                        p.x = Math.random() * this.canvas.width;
+                        p.y = Math.random() * this.canvas.height;
+                        p.alpha = Math.random() * 0.5 + 0.2;
+                    }
+                }
+                
+                // Wrap around screen
+                if (p.x < 0) p.x = this.canvas.width;
+                if (p.x > this.canvas.width) p.x = 0;
+                if (p.y < 0) p.y = this.canvas.height;
+                if (p.y > this.canvas.height) p.y = 0;
+                
+                // Draw particle
+                this.ctx.save();
+                this.ctx.globalAlpha = p.alpha;
+                this.ctx.fillStyle = `hsl(${p.hue || this.hue}, 70%, 60%)`;
+                this.ctx.beginPath();
+                this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.restore();
+            }
+        }
+    }
+
+    // Initialize the visualizer
+    const visualizer = new MusicVisualizer();
+</script>
+
+
+</body>
+</html>
